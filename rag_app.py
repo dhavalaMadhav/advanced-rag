@@ -8,7 +8,6 @@ print("🚀 Starting RAG system...")
 # -----------------------------
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-HF_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
 # -----------------------------
 # FastAPI setup
@@ -34,7 +33,28 @@ from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_groq import ChatGroq
-from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
+
+# -----------------------------
+# 🔥 LOCAL EMBEDDING (LAZY LOAD)
+# -----------------------------
+from sentence_transformers import SentenceTransformer
+
+_model = None
+
+def get_model():
+    global _model
+    if _model is None:
+        print("🧠 Loading embedding model (once)...")
+        _model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _model
+
+class EmbeddingManager:
+    def embed_documents(self, texts):
+        return get_model().encode(texts).tolist()
+
+    def embed_query(self, text):
+        return get_model().encode([text])[0].tolist()
+
 # -----------------------------
 # Load PDFs
 # -----------------------------
@@ -66,18 +86,17 @@ def split_documents(docs):
 # Create / Load DB
 # -----------------------------
 def get_vectorstore():
-    # 🔥 Use persistent folder (important)
-    persist_dir = "./chroma_db"
+    persist_dir = os.path.join(os.getcwd(), "chroma_db")
 
-    embeddings = HuggingFaceInferenceAPIEmbeddings(
-        api_key=HF_TOKEN,
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
+    embeddings = EmbeddingManager()
 
-    # --------------------------------------------------
-    # ❌ DISABLED: Heavy embedding (causes Render crash)
-    # --------------------------------------------------
-
+    # =====================================================
+    # 🔴 INDEXING MODE (USE ONLY LOCALLY)
+    # =====================================================
+    # 👉 Uncomment this block ONLY when:
+    #    - You add new PDFs
+    #    - You want to rebuild the vector DB
+    #
     # docs = load_documents("data")
     # chunks = split_documents(docs)
     #
@@ -86,10 +105,17 @@ def get_vectorstore():
     #     embedding=embeddings,
     #     persist_directory=persist_dir
     # )
+    #
+    # print("✅ DB CREATED / UPDATED")
+    # return db
+    # =====================================================
 
-    # --------------------------------------------------
-    # ✅ ONLY LOAD EXISTING DB
-    # --------------------------------------------------
+    # =====================================================
+    # 🟢 PRODUCTION MODE (DEFAULT)
+    # =====================================================
+    # 👉 This loads already created DB
+    # 👉 Used in Render (fast + low memory)
+    # =====================================================
     db = Chroma(
         persist_directory=persist_dir,
         embedding_function=embeddings
@@ -124,14 +150,15 @@ class Query(BaseModel):
 # -----------------------------
 @app.post("/ask")
 def ask(query: Query):
-    docs = retriever.invoke(query.question)
+    try:
+        docs = retriever.invoke(query.question)
 
-    if not docs:
-        return {"answer": "No relevant documents found", "sources": []}
+        if not docs:
+            return {"answer": "No relevant documents found", "sources": []}
 
-    context = "\n\n".join([d.page_content for d in docs])
+        context = "\n\n".join([d.page_content for d in docs])
 
-    prompt = f"""
+        prompt = f"""
 Answer ONLY using the context below.
 If not found, say: I don't know.
 
@@ -142,18 +169,21 @@ Question:
 {query.question}
 """
 
-    response = llm.invoke(prompt)
+        response = llm.invoke(prompt)
 
-    return {
-        "answer": response.content,
-        "sources": [
-            {
-                "file": d.metadata.get("source"),
-                "page": d.metadata.get("page")
-            }
-            for d in docs
-        ]
-    }
+        return {
+            "answer": response.content,
+            "sources": [
+                {
+                    "file": d.metadata.get("source"),
+                    "page": d.metadata.get("page")
+                }
+                for d in docs
+            ]
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
 
 # -----------------------------
 # Health check
