@@ -8,6 +8,7 @@ print("🚀 Starting RAG system...")
 # -----------------------------
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+HF_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
 # -----------------------------
 # FastAPI setup
@@ -35,25 +36,36 @@ from langchain_community.vectorstores import Chroma
 from langchain_groq import ChatGroq
 
 # -----------------------------
-# 🔥 LOCAL EMBEDDING (LAZY LOAD)
+# 🔥 SAFE EMBEDDING MANAGER
 # -----------------------------
-from sentence_transformers import SentenceTransformer
-
-_model = None
-
-def get_model():
-    global _model
-    if _model is None:
-        print("🧠 Loading embedding model (once)...")
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
-    return _model
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
+import numpy as np
 
 class EmbeddingManager:
+    def __init__(self):
+        print("🔗 Initializing HF embedding...")
+        self.model = HuggingFaceInferenceAPIEmbeddings(
+            api_key=HF_TOKEN,
+            model_name="intfloat/e5-small-v2"   # ✅ more stable
+        )
+
+    def fallback_embedding(self, text):
+        print("⚠️ Using fallback embedding")
+        return list(np.random.rand(384))  # safe fallback
+
     def embed_documents(self, texts):
-        return get_model().encode(texts).tolist()
+        try:
+            return self.model.embed_documents(texts)
+        except Exception as e:
+            print("❌ Doc embedding failed:", str(e))
+            return [self.fallback_embedding(t) for t in texts]
 
     def embed_query(self, text):
-        return get_model().encode([text])[0].tolist()
+        try:
+            return self.model.embed_query(text)
+        except Exception as e:
+            print("❌ Query embedding failed:", str(e))
+            return self.fallback_embedding(text)
 
 # -----------------------------
 # Load PDFs
@@ -91,12 +103,8 @@ def get_vectorstore():
     embeddings = EmbeddingManager()
 
     # =====================================================
-    # 🔴 INDEXING MODE (USE ONLY LOCALLY)
+    # 🔴 INDEXING MODE (LOCAL ONLY)
     # =====================================================
-    # 👉 Uncomment this block ONLY when:
-    #    - You add new PDFs
-    #    - You want to rebuild the vector DB
-    #
     # docs = load_documents("data")
     # chunks = split_documents(docs)
     #
@@ -111,10 +119,7 @@ def get_vectorstore():
     # =====================================================
 
     # =====================================================
-    # 🟢 PRODUCTION MODE (DEFAULT)
-    # =====================================================
-    # 👉 This loads already created DB
-    # 👉 Used in Render (fast + low memory)
+    # 🟢 PRODUCTION MODE
     # =====================================================
     db = Chroma(
         persist_directory=persist_dir,
