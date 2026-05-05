@@ -4,10 +4,11 @@ from dotenv import load_dotenv
 print("🚀 Starting RAG system...")
 
 # -----------------------------
-# Load API Key
+# Load API Keys
 # -----------------------------
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+HF_TOKEN = os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
 # -----------------------------
 # FastAPI setup
@@ -18,7 +19,6 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-# Allow frontend requests
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,23 +34,7 @@ from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_groq import ChatGroq
-from sentence_transformers import SentenceTransformer
-
-# -----------------------------
-# Embedding Manager
-# -----------------------------
-class EmbeddingManager:
-    def __init__(self):
-        print("🧠 Loading embedding model (only once)...")
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
-
-    def embed_documents(self, texts):
-        return self.model.encode(texts).tolist()
-
-    def embed_query(self, text):
-        return self.model.encode([text])[0].tolist()
-
-
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 # -----------------------------
 # Load PDFs
 # -----------------------------
@@ -68,7 +52,6 @@ def load_documents(folder="data"):
             docs.extend(loaded_docs)
     return docs
 
-
 # -----------------------------
 # Split Documents
 # -----------------------------
@@ -79,39 +62,46 @@ def split_documents(docs):
     )
     return splitter.split_documents(docs)
 
-
 # -----------------------------
-# Create or Load DB
+# Create / Load DB
 # -----------------------------
-def get_vectorstore(embedding_manager):
+def get_vectorstore():
+    # 🔥 Use persistent folder (important)
     persist_dir = "./chroma_db"
 
-    if os.path.exists(persist_dir):
-        print("⚡ Loading existing DB (FAST START)")
-        return Chroma(
-            persist_directory=persist_dir,
-            embedding_function=embedding_manager
-        )
+    embeddings = HuggingFaceInferenceAPIEmbeddings(
+        api_key=HF_TOKEN,
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
 
-    print("🆕 Creating DB (first time setup)...")
+    # --------------------------------------------------
+    # ❌ DISABLED: Heavy embedding (causes Render crash)
+    # --------------------------------------------------
 
-    docs = load_documents("data")
-    chunks = split_documents(docs)
+    # docs = load_documents("data")
+    # chunks = split_documents(docs)
+    #
+    # db = Chroma.from_documents(
+    #     documents=chunks,
+    #     embedding=embeddings,
+    #     persist_directory=persist_dir
+    # )
 
-    db = Chroma.from_documents(
-        documents=chunks,
-        embedding=embedding_manager,
-        persist_directory=persist_dir
+    # --------------------------------------------------
+    # ✅ ONLY LOAD EXISTING DB
+    # --------------------------------------------------
+    db = Chroma(
+        persist_directory=persist_dir,
+        embedding_function=embeddings
     )
 
     return db
 
-
 # -----------------------------
-# LOAD EVERYTHING ONCE (IMPORTANT)
+# LOAD SYSTEM
 # -----------------------------
-embedding_manager = EmbeddingManager()
-db = get_vectorstore(embedding_manager)
+print("📦 Loading vector DB...")
+db = get_vectorstore()
 retriever = db.as_retriever(search_kwargs={"k": 3})
 
 print("🤖 Connecting to Groq...")
@@ -129,7 +119,6 @@ print("✅ Backend ready!")
 class Query(BaseModel):
     question: str
 
-
 # -----------------------------
 # API Endpoint
 # -----------------------------
@@ -144,8 +133,7 @@ def ask(query: Query):
 
     prompt = f"""
 Answer ONLY using the context below.
-If the answer is not present, say:
-"I don't know based on the given documents."
+If not found, say: I don't know.
 
 Context:
 {context}
@@ -167,9 +155,8 @@ Question:
         ]
     }
 
-
 # -----------------------------
-# Optional test route
+# Health check
 # -----------------------------
 @app.get("/")
 def home():
