@@ -1,0 +1,72 @@
+# ============================================================
+# docker-compose.yml — Observable RAG Platform
+# ============================================================
+# Services:
+#   mongo   — MongoDB for telemetry persistence
+#   ragapp  — FastAPI RAG application
+# ============================================================
+
+version: "3.9"
+
+services:
+
+  # ----------------------------------------------------------
+  # MongoDB — telemetry storage
+  # ----------------------------------------------------------
+  mongo:
+    image: mongo:7.0
+    container_name: rag_mongo
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: adminpass
+      MONGO_INITDB_DATABASE: rag_telemetry
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ----------------------------------------------------------
+  # FastAPI RAG Application
+  # ----------------------------------------------------------
+  ragapp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag_app
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      # Point to the local mongo service instead of Atlas when running in Docker
+      MONGODB_URI: "mongodb://admin:adminpass@mongo:27017/?authSource=admin"
+      MONGODB_DB: rag_telemetry
+      # These are overridden by .env at runtime; set them here for completeness
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      HUGGINGFACEHUB_API_TOKEN: ${HUGGINGFACEHUB_API_TOKEN}
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount chroma_db so the index persists across container restarts
+      - ./chroma_db:/app/chroma_db
+      # Mount data folder for PDFs
+      - ./data:/app/data
+      # Mount logs so JSONL files are visible on the host
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  mongo_data:
+    driver: local
