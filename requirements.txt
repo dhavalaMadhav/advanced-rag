@@ -12,3 +12,4 @@ pymongo
 sse-starlette
 pydantic
 numpy
+langchain-huggingface
