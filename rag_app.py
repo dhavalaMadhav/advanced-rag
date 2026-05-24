@@ -154,11 +154,17 @@ def get_vectorstore():
 
 
 # -------------------------------------------------------------------------
-# Load system at startup
+# Load system lazily (prevents startup hangs and port-binding timeouts on Render)
 # -------------------------------------------------------------------------
-print("[INFO] Loading vector DB...")
-_chroma = get_vectorstore()
-retriever = _chroma.as_retriever(search_kwargs={"k": 3})
+_retriever = None
+
+def get_retriever():
+    global _retriever
+    if _retriever is None:
+        print("[INFO] Loading vector DB...")
+        chroma = get_vectorstore()
+        _retriever = chroma.as_retriever(search_kwargs={"k": 3})
+    return _retriever
 
 print("[INFO] Connecting to Groq...")
 llm = ChatGroq(
@@ -201,6 +207,7 @@ def ask(query: Query):
     """
     try:
         # --- Retrieval (unchanged) ----------------------------------------
+        retriever = get_retriever()
         docs = retriever.invoke(query.question)
 
         if not docs:
@@ -255,6 +262,7 @@ def ask_stream(query: Query):
     Each chunk is formatted as:  data: <token>\\n\\n
     A final "data: [DONE]\\n\\n" signals end-of-stream.
     """
+    retriever = get_retriever()
     docs = retriever.invoke(query.question)
 
     if not docs:
